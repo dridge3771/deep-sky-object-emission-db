@@ -1,0 +1,89 @@
+# SkyPix_Object_Database
+
+## Overview
+A comprehensive external database for SkyPix Planner, covering 99%+ of major catalogued deep sky objects (galaxies, nebulae, clusters, etc.) with standardized fields for rig planning, signal-to-noise calculations, and direct cross-referencing.
+
+## Schema Fields
+
+- **catalog_ids**: Array of catalog designations (e.g., ["NGC 7000", "C 20"])
+- **common_names**: Array of common object names
+- **type**: Object classification (Galaxy, Emission Nebula, Globular Cluster, etc.)
+- **ra_jtoday_deg**, **dec_jtoday_deg**: Right ascension/declination (degrees, JToday epoch)
+- **ra_j2000_deg**, **dec_j2000_deg**: Right ascension/declination (degrees, J2000 epoch)
+- **size_major_arcmin**: Major axis size (arcminutes, numeric)
+- **size_minor_arcmin**: Minor axis size (arcminutes, numeric)
+- **mag**: Apparent magnitude (numeric)
+- **position_angle_deg**: Position angle of major axis (degrees east of north, 0–180). If unavailable, `null`.
+- **emission_profile**: 12-band emission encoding (string, comma-separated values)
+
+## Emission Profile Encoding
+
+- **Measured emission data:** Negative value (e.g., `-25` means 25% measured emission in that band)
+- **Estimated/assumed emission data:** Positive value (e.g., `25` means 25% estimated/assumed emission in that band)
+- **Zero (`0`):** No emission or not applicable
+- **AstroBin Tech Card integration:** When enabled, estimated values are replaced by measured values from AstroBin (encoded as negative).
+
+### Band Order
+
+1. Hα  
+2. OIII  
+3. SII  
+4. NII  
+5. Hβ  
+6. He  
+7. C  
+8. Mg  
+9. Broadband  
+10. Radio  
+11. Expansion1  
+12. Expansion2  
+
+## Coordinate Systems
+
+- **ra_jtoday_deg**, **dec_jtoday_deg**: JToday epoch
+- **ra_j2000_deg**, **dec_j2000_deg**: J2000 epoch
+
+## Size and Axis Fields
+
+- All axis-based measurements use "major" and "minor" naming convention.
+
+## Position Angle
+
+- **position_angle_deg**: Angle of major axis, degrees east of north (0–180). If not available, set to `null`.
+
+## Example Entry
+
+```json
+{
+  "catalog_ids": ["M31", "NGC 224"],
+  "common_names": ["Andromeda Galaxy"],
+  "type": "Galaxy",
+  "ra_jtoday_deg": 10.684,
+  "dec_jtoday_deg": 41.269,
+  "ra_j2000_deg": 10.684,
+  "dec_j2000_deg": 41.269,
+  "size_major_arcmin": 190,
+  "size_minor_arcmin": 60,
+  "mag": 3.4,
+  "position_angle_deg": 38,
+  "emission_profile": "0,0,0,0,0,0,0,0,15,7,0,0"
+}
+```
+
+## Rig Planner Cell Paint
+
+- Exposure cell is painted yellow if based on estimated/assumed emission (positive value).
+- If AstroBin replaces the value with measured data, cell returns to normal.
+
+## Expansion
+
+- Schema is extensible for more objects and bands.
+
+## Terminology Convention
+
+- "major"/"minor" for all axis dimensions
+- "position_angle_deg" for orientation of major axis
+
+## Usage
+
+Place `SkyPix_Object_Database.json` in the root directory of your SkyPix Planner reference repo or workspace.
