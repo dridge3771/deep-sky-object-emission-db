@@ -1,0 +1,73 @@
+SkyPix_Object_Database.json
+[
+  {
+    "catalog_ids": ["NGC 7000", "C 20"],
+    "common_names": ["North America Nebula"],
+    "type": "Emission Nebula",
+    "ra_jtoday_deg": 314.0,
+    "dec_jtoday_deg": 44.5,
+    "ra_j2000_deg": 314.0,
+    "dec_j2000_deg": 44.5,
+    "size_major_arcmin": 120,
+    "size_minor_arcmin": 100,
+    "mag": 4.0,
+    "position_angle_deg": null,
+    "emission_profile": "-60,-20,8,12,0,0,0,0,0,0,0,0"
+  },
+  {
+    "catalog_ids": ["M31", "NGC 224"],
+    "common_names": ["Andromeda Galaxy"],
+    "type": "Galaxy",
+    "ra_jtoday_deg": 10.684,
+    "dec_jtoday_deg": 41.269,
+    "ra_j2000_deg": 10.684,
+    "dec_j2000_deg": 41.269,
+    "size_major_arcmin": 190,
+    "size_minor_arcmin": 60,
+    "mag": 3.4,
+    "position_angle_deg": 38,
+    "emission_profile": "0,0,0,0,0,0,0,0,15,7,0,0"
+  },
+  {
+    "catalog_ids": ["M42", "NGC 1976"],
+    "common_names": ["Orion Nebula"],
+    "type": "Emission Nebula",
+    "ra_jtoday_deg": 83.822,
+    "dec_jtoday_deg": -5.391,
+    "ra_j2000_deg": 83.822,
+    "dec_j2000_deg": -5.391,
+    "size_major_arcmin": 85,
+    "size_minor_arcmin": 60,
+    "mag": 4.0,
+    "position_angle_deg": null,
+    "emission_profile": "-65,-22,14,6,-4,0,0,0,0,9,0,0"
+  },
+  {
+    "catalog_ids": ["M13", "NGC 6205"],
+    "common_names": ["Hercules Cluster"],
+    "type": "Globular Cluster",
+    "ra_jtoday_deg": 250.421,
+    "dec_jtoday_deg": 36.461,
+    "ra_j2000_deg": 250.421,
+    "dec_j2000_deg": 36.461,
+    "size_major_arcmin": 20,
+    "size_minor_arcmin": 20,
+    "mag": 5.8,
+    "position_angle_deg": null,
+    "emission_profile": "0,0,0,0,0,0,0,0,23,0,0,0"
+  },
+  {
+    "catalog_ids": ["M27", "NGC 6853"],
+    "common_names": ["Dumbbell Nebula"],
+    "type": "Planetary Nebula",
+    "ra_jtoday_deg": 312.694,
+    "dec_jtoday_deg": 22.752,
+    "ra_j2000_deg": 312.694,
+    "dec_j2000_deg": 22.752,
+    "size_major_arcmin": 8,
+    "size_minor_arcmin": 6,
+    "mag": 7.5,
+    "position_angle_deg": 31,
+    "emission_profile": "-40,-32,16,12,-6,0,0,0,0,0,0,0"
+  }
+]
