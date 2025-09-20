@@ -1,0 +1,416 @@
+/************************************************************************************
+ * SkyPix — Local Catalog DB Builder with Emission Lines (v0.8)
+ * Writes to this spreadsheet → sheet "Local Catalog DB".
+ * Measured emission line data (if present) -> NEGATIVE values.
+ * Estimated defaults (class-based) -> POSITIVE values; don’t overwrite measured/user.
+ ************************************************************************************/
+
+/** @OnlyCurrentDoc */
+
+/********************************* DESTINATION **************************************/
+const LOCAL_DB_SHEET = 'Local Catalog DB';   // output table
+const OVERRIDES_SHEET = 'Emission Overrides';// optional measured-line overrides
+
+/********************************* TAP ENDPOINTS ************************************/
+const TAP_SIMBAD = 'https://simbad.u-strasbg.fr/simbad/sim-tap/sync';
+const TAP_VIZIER = 'https://tapvizier.cds.unistra.fr/TAPVizieR/sync';
+
+/********************************* SCHEMA (18 columns) ******************************/
+const LOCAL_HEADERS = [
+  'Catalog ID(s)','Common name','Type',
+  'RA (JToday, degrees)','Dec (JToday, degrees)',
+  'RA (J2000, degrees)','Dec (J2000, degrees)',
+  'Size major axis (arcmin)','Size minor axis (arcmin)',
+  'Magnitude','Position angle (deg)',
+  'Hα (%)','Hβ (%)','He I (%)','OIII (%)','SII (%)','NII (%)','Broadband (%)'
+];
+
+/********************************* LIMITS / OPTIONS *********************************/
+const MAX_PER_QUERY = 800;     // SIMBAD chunk size for IN(...)
+const DEFAULT_MAX   = 50000;   // polite TAP MAXREC cap
+
+/********************************* MENU *********************************************/
+function onOpen(){
+  SpreadsheetApp.getUi().createMenu('Local DB')
+    .addItem('Rebuild here (clear + build + emissions)', 'LocalDB_Rebuild_Here')
+    .addItem('Build (no clear) + emissions', 'LocalDB_Build_Default')
+    .addItem('Count rows (log)', 'LocalDB_CountRows_Here')
+    .addItem('Open Emission Overrides', 'Open_Emission_Overrides')
+    .addToUi();
+}
+
+/********************************* DEST / HEADER ************************************/
+function LocalDB_openOrCreate_(){
+  const ss = SpreadsheetApp.getActive();
+  if (!ss) throw new Error('Open from a Google Sheet (Extensions → Apps Script).');
+  const sheet = ss.getSheetByName(LOCAL_DB_SHEET) || ss.insertSheet(LOCAL_DB_SHEET);
+  return {ss, sheet};
+}
+function LocalDB_EnsureHeader_(sheet){
+  if (sheet.getLastRow() === 0) sheet.insertRows(1);
+  sheet.getRange(1,1,1,LOCAL_HEADERS.length)
+    .setValues([LOCAL_HEADERS])
+    .setFontWeight('bold')
+    .setFontColor('#333');
+  sheet.setFrozenRows(1);
+}
+
+/********************************* PUBLIC RUNNERS ***********************************/
+function LocalDB_Rebuild_Here(){
+  const {sheet} = LocalDB_openOrCreate_();
+  sheet.clear();
+  LocalDB_EnsureHeader_(sheet);
+  LocalDB_Build_Default();
+  SpreadsheetApp.getActive().toast('Local DB rebuilt.', 'LocalDB', 4);
+}
+function LocalDB_Build_Default(){
+  LocalDB_Import([
+    'messier','ngc','ic',
+    'sh2','rcw','ldn','lbn',
+    'vdb','barnard','palomar','terzan',
+    'simeis','westerhout','dwb',
+    'collinder','trumpler','berkeley',
+    'pk'
+  ]);
+  // 1) apply measured (negative) from Overrides (non-destructive)
+  LocalDB_Enrich_Emissions_FromOverrides_();
+  // 2) fill estimates (positive) where still blank
+  LocalDB_Enrich_Emissions_Defaults_();
+}
+function LocalDB_CountRows_Here(){
+  const {sheet} = LocalDB_openOrCreate_();
+  Logger.log('Rows (excluding header): %s', Math.max(0, sheet.getLastRow()-1));
+}
+function Open_Emission_Overrides(){
+  const sh = ensureOverridesSheet_();
+  SpreadsheetApp.setActiveSheet(sh);
+}
+
+/********************************* REGISTRY *****************************************/
+// Returns records { id, common?, otype?, ra, dec, mag?, size_major?, size_minor?, pa? }
+const REGISTRY = {
+  messier   : { kind: 'vizier_messier', max: 200 },
+
+  ngc       : { kind: 'vizier_ngcic', which: 'NGC', max: 12000 },
+  ic        : { kind: 'vizier_ngcic', which: 'IC',  max:  6000 },
+
+  sh2       : { kind: 'vizier_table', table:'VII/20/catalog',
+                columns:['Sh2','RAJ2000','DEJ2000','Name'], where:null, max:1000, otype:'HII' },
+  rcw       : { kind: 'vizier_table', table:'VII/216/rcw',
+                columns:['Name','RAJ2000','DEJ2000'], where:null, max:600,  otype:'HII' },
+  ldn       : { kind: 'vizier_table', table:'VII/7A/ldn',
+                columns:['Name','RAJ2000','DEJ2000','Area'], where:null, max:6000, otype:'DarkNeb' },
+  lbn       : { kind: 'vizier_table', table:'VII/9/lbn',
+                columns:['Name','RAJ2000','DEJ2000','MajAxis','MinAxis'], where:null, max:6000, otype:'BrightNeb' },
+
+  vdb       : { kind: 'simbad_series', templates:['VdB %','vdB %'], start:1, end:158, otype:'RefNeb' },
+  barnard   : { kind: 'simbad_series', templates:['Barnard %'],     start:1, end:400, otype:'DarkNeb' },
+  simeis    : { kind: 'simbad_series', templates:['Simeis %'],      start:1, end:300, otype:'Neb' },
+  westerhout: { kind: 'simbad_series', templates:['W %'],           start:1, end:100, otype:'Neb' },
+  dwb       : { kind: 'simbad_series', templates:['DWB %'],         start:1, end:200, otype:'Neb' },
+
+  collinder : { kind:'vizier_table', table:'B/ocl/clusters',
+                columns:['Cluster','RAJ2000','DEJ2000','Diam'],
+                where:"Cluster LIKE 'Collinder %'", max:2000, otype:'OpC' },
+  trumpler  : { kind:'vizier_table', table:'B/ocl/clusters',
+                columns:['Cluster','RAJ2000','DEJ2000','Diam'],
+                where:"Cluster LIKE 'Trumpler %'",  max:2000, otype:'OpC' },
+  berkeley  : { kind:'vizier_table', table:'B/ocl/clusters',
+                columns:['Cluster','RAJ2000','DEJ2000','Diam'],
+                where:"Cluster LIKE 'Berkeley %'",  max:2000, otype:'OpC' },
+
+  palomar   : { kind:'simbad_series', templates:['Pal %'],    start:1, end:15, otype:'GlC' },
+  terzan    : { kind:'simbad_series', templates:['Terzan %'], start:1, end:20, otype:'GlC' },
+
+  pk        : { kind:'vizier_table', table:'V/84/catalog',
+                columns:['Name','RAJ2000','DEJ2000'], where:"Name LIKE 'PK %'", max:5000, otype:'PN' }
+};
+
+/********************************* IMPORT DISPATCH **********************************/
+function LocalDB_Import(keys){
+  if (!keys || !keys.length) keys = Object.keys(REGISTRY);
+
+  const {sheet} = LocalDB_openOrCreate_();
+  LocalDB_EnsureHeader_(sheet);
+
+  const existing = LocalDB_buildExistingIdSet_(sheet);
+  const toAppend = [];
+
+  keys.forEach(k => {
+    const cfg = REGISTRY[k]; if (!cfg) return;
+    let recs = [];
+    try {
+      if (cfg.kind === 'vizier_messier') {
+        recs = vizierMessier_(cfg.max || 200);
+      } else if (cfg.kind === 'vizier_ngcic') {
+        recs = vizierNGCIC_(cfg.which, cfg.max || 16000);
+      } else if (cfg.kind === 'vizier_table') {
+        recs = vizierFromTable_(cfg.table, cfg.columns, cfg.where, cfg.max || DEFAULT_MAX, cfg.otype);
+      } else if (cfg.kind === 'simbad_series') {
+        recs = simbadBySeries_(cfg.templates, cfg.start, cfg.end, cfg.otype);
+      } else {
+        throw new Error('Unknown registry kind for '+k);
+      }
+    } catch (e) {
+      Logger.log('Import "%s" failed: %s', k, e);
+      return;
+    }
+
+    recs.forEach(r => {
+      const id = r.id && String(r.id).trim();
+      if (!id || existing.has(id)) return;
+      toAppend.push(mapToLocalRow_(r));
+      existing.add(id);
+    });
+    Logger.log('%s → %s rows', k, recs.length);
+  });
+
+  if (toAppend.length){
+    sheet.getRange(sheet.getLastRow()+1, 1, toAppend.length, LOCAL_HEADERS.length).setValues(toAppend);
+  }
+  SpreadsheetApp.getActive().toast(`Local DB: appended ${toAppend.length} rows`, 'LocalDB', 5);
+}
+
+function LocalDB_buildExistingIdSet_(sheet){
+  const out = new Set();
+  const last = sheet.getLastRow();
+  if (last <= 1) return out;
+  const ids = sheet.getRange(2,1,last-1,1).getValues();
+  for (let i=0;i<ids.length;i++){
+    const v = String(ids[i][0]||'').trim();
+    if (v) out.add(v);
+  }
+  return out;
+}
+
+/********************************* SOURCE FETCHERS **********************************/
+// Messier with mag/size/PA + common name (VizieR VII/118/m)
+function vizierMessier_(maxRows){
+  const adql = `SELECT TOP ${Math.max(1, maxRows|0)}
+                  M, RAJ2000, DEJ2000, Vmag, Dim, PA, Name
+                FROM "VII/118/m"`;
+  const rows = parseCsv_(tapCsv_(TAP_VIZIER, adql, maxRows));
+  return rows.map(r => {
+    const id = r.M ? `M ${String(r.M).trim()}` : cleanId_(r.Name||'');
+    const ra = pickRaDeg_(r), dec = pickDecDeg_(r);
+    const mag = numOrNull_(r.Vmag);
+    const common = r.Name || '';
+    // size "10x8" (arcmin)
+    let maj='', min='';
+    if (r.Dim){
+      const parts = String(r.Dim).toLowerCase().replace(/×/g,'x').split('x').map(s=>s.replace(/[^\d.\-]/g,''));
+      maj = numOrNull_(parts[0]); min = numOrNull_(parts[1]||'');
+    }
+    const pa = numOrNull_(r.PA);
+    return { id, common, ra, dec, mag, size_major:maj, size_minor:min, pa, otype:'Obj' };
+  }).filter(x=>x.id && isFinite(x.ra) && isFinite(x.dec));
+}
+
+// NGC/IC positions from VizieR VII/239A/icpos
+function vizierNGCIC_(which, maxRows){
+  try{
+    const cat = (which==='IC') ? 'I' : 'N';
+    const adql = `SELECT TOP ${Math.max(1, maxRows|0)}
+                    "Cat","NGC/IC" AS num, RAJ2000, DEJ2000
+                  FROM "VII/239A/icpos"
+                  WHERE "Cat"='${cat}'`;
+    const rows = parseCsv_(tapCsv_(TAP_VIZIER, adql, maxRows));
+    return rows.map(r => ({
+      id: `${cat==='N' ? 'NGC' : 'IC'} ${String(r.num).trim()}`,
+      ra: pickRaDeg_(r), dec: pickDecDeg_(r), otype:'Obj'
+    })).filter(x=>x.id && isFinite(x.ra) && isFinite(x.dec));
+  } catch(e){
+    Logger.log('vizierNGCIC_ error: %s', e);
+    return [];
+  }
+}
+
+// Generic VizieR table
+function vizierFromTable_(table, columns, whereClause, maxRows, otypeHint){
+  const cols = (columns && columns.length ? columns.join(', ') : '*');
+  const adql = `SELECT TOP ${Math.max(1, maxRows|0)} ${cols}
+                FROM "${table}"` + (whereClause ? ` WHERE ${whereClause}` : '');
+  const rows = parseCsv_(tapCsv_(TAP_VIZIER, adql, maxRows));
+  return rows.map(r=>{
+    const id = r.Name || r.Cluster || r['NGC/IC'] || r.NGC || r.IC || r.Sh2 || '';
+    const ra = pickRaDeg_(r), dec = pickDecDeg_(r);
+    let maj = numOrNull_(r.Diam || r.MajAxis), min = numOrNull_(r.MinAxis);
+    if (maj && String(maj).indexOf(':')>-1){ maj=''; }
+    return { id: cleanId_(id), ra, dec, otype: otypeHint||'Obj', size_major:maj||'', size_minor:min||'' };
+  }).filter(x=>x.id && isFinite(x.ra) && isFinite(x.dec));
+}
+
+// SIMBAD explicit-series → chunked IN()
+function simbadBySeries_(templates, start, end, otypeHint){
+  const ids = [];
+  templates.forEach(t => { for (let n=start; n<=end; n++) ids.push(t.replace('%', n)); });
+  const recs = simbadByIdList_(ids);
+  if (otypeHint) recs.forEach(r => r.otype = otypeHint);
+  return recs;
+}
+function simbadByIdList_(ids){
+  if (!ids || !ids.length) return [];
+  const out = [];
+  for (let i=0; i<ids.length; i+=MAX_PER_QUERY){
+    const list = ids.slice(i, i+MAX_PER_QUERY);
+    const values = list.map(n=>`'${String(n).replace(/'/g,"''")}'`).join(',');
+    const adql = `SELECT DISTINCT TOP ${list.length}
+                    b.main_id, b.ra, b.dec, b.otype_txt
+                  FROM basic AS b
+                  JOIN ident AS i ON b.oid=i.oidref
+                  WHERE i.id IN (${values})`;
+    const rows = parseCsv_(tapCsv_(TAP_SIMBAD, adql, list.length));
+    rows.forEach(r => out.push({
+      id: cleanId_(r.main_id),
+      ra: numOrNull_(r.ra),
+      dec: numOrNull_(r.dec),
+      otype: r.otype_txt || 'Obj'
+    }));
+  }
+  return out;
+}
+
+/********************************* MAPPING → SHEET **********************************/
+function mapToLocalRow_(rec){
+  const n = v => (v=== '' || v==null || isNaN(Number(v))) ? '' : Number(v);
+  return [
+    rec.id || '',
+    rec.common || '',
+    rec.otype || rec.type || '',
+    '', '',                    // JToday blanks (optional future)
+    n(rec.ra), n(rec.dec),     // J2000
+    n(rec.size_major), n(rec.size_minor),
+    n(rec.mag), n(rec.pa),
+    // emissions L..R (start blank; enrichment fills)
+    '', '', '', '', '', '', ''
+  ];
+}
+
+/********************************* EMISSIONS: MEASURED (NEGATIVE) ******************/
+// Sheet-based overrides → easiest reliable “measured” path now; negative numbers
+function ensureOverridesSheet_(){
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName(OVERRIDES_SHEET);
+  if (!sh){
+    sh = ss.insertSheet(OVERRIDES_SHEET);
+    sh.getRange(1,1,1,10).setValues([[
+      'Catalog ID(s)','Hα (%)','Hβ (%)','He I (%)','OIII (%)','SII (%)','NII (%)','Broadband (%)','Source','Notes'
+    ]]).setFontWeight('bold');
+    sh.setFrozenRows(1);
+  }
+  return sh;
+}
+function LocalDB_Enrich_Emissions_FromOverrides_(){
+  const {sheet} = LocalDB_openOrCreate_();
+  const last = sheet.getLastRow();
+  if (last <= 1) return;
+
+  const ov = ensureOverridesSheet_();
+  const oLast = ov.getLastRow();
+  if (oLast <= 1) return;
+
+  const oVals = ov.getRange(2,1,oLast-1,10).getValues();
+  const map = {};
+  oVals.forEach(r=>{
+    const id = String(r[0]||'').trim();
+    if (!id) return;
+    const bands = r.slice(1,8).map(v => v===''? '' : -Math.abs(Number(v))); // NEGATIVE for measured
+    map[id.toUpperCase()] = bands;
+  });
+
+  // Build row index for Local DB
+  const ids = sheet.getRange(2,1,last-1,1).getValues();
+  for (let i=0;i<ids.length;i++){
+    const id = String(ids[i][0]||'').trim().toUpperCase();
+    const bands = map[id];
+    if (!bands) continue;
+    sheet.getRange(2+i, 12, 1, 7).setValues([bands]);
+  }
+}
+
+/********************************* EMISSIONS: ESTIMATED (POSITIVE) ******************/
+function emissionDefaultsFor_(id, otype){
+  const t = String(otype||'').toUpperCase();
+  const s = String(id||'').toUpperCase();
+
+  const isPN   = t.includes('PN') || /^PK\s/.test(s);
+  const isHII  = t.includes('HII') || /^SH\s*2/.test(s) || /^RCW\s/.test(s) || /^LBN\s/.test(s) || /^W\s+\d+/.test(s) || /^DWB\s/.test(s);
+  const isSNR  = t.includes('SNR') || /SUPERNOVA/.test(t);
+  const isRef  = /REF/.test(t) || /^VDB\s/.test(s);
+  const isDark = /DARK/.test(t) || /^LDN\s/.test(s) || /^BARNARD\s/.test(s);
+  const isClus = /GLC|GLOB|OPC|OPEN|CLUSTER/.test(t);
+  const isGal  = /GALAXY|AGN|QSO|GXY|GIC|GIG/.test(t);
+
+  if (isPN)  return [20,10,2,55,8,5,0];     // PN: OIII dominant
+  if (isHII) return [60,12,2,20,5,1,0];     // HII: strong Hα
+  if (isSNR) return [35,5,0,35,20,5,0];     // SNR
+  if (isRef) return [0,0,0,0,0,0,100];      // reflection → broadband
+  if (isDark) return [0,0,0,0,0,0,0];       // dark nebula
+  if (isClus || isGal) return [0,0,0,0,0,0,100]; // clusters/galaxies → broadband
+  return [0,0,0,0,0,0,0];
+}
+
+function LocalDB_Enrich_Emissions_Defaults_(){
+  const {sheet} = LocalDB_openOrCreate_();
+  const last = sheet.getLastRow();
+  if (last <= 1) return;
+
+  const vals = sheet.getRange(2,1,last-1,LOCAL_HEADERS.length).getValues();
+  const writes = [];
+  for (let i=0;i<vals.length;i++){
+    const row = vals[i];
+    // bands L..R
+    const bands = row.slice(11,18);
+    const hasAny = bands.some(v => String(v||'').trim()!=='');
+    if (hasAny) continue; // keep measured/user-entered
+    const id = row[0], otype = row[2];
+    const est = emissionDefaultsFor_(id, otype).map(v => v===0? '' : Math.abs(v)); // positive
+    writes.push({r: 2+i, vals: est});
+  }
+  writes.forEach(w => sheet.getRange(w.r, 12, 1, 7).setValues([w.vals]));
+}
+
+/********************************* TAP / UTILS **************************************/
+function tapCsv_(endpoint, adql, maxrec){
+  const payload = { REQUEST:'doQuery', LANG:'ADQL', FORMAT:'csv', QUERY:adql };
+  if (maxrec != null && isFinite(maxrec)) payload.MAXREC = String(Math.max(1, Math.floor(Number(maxrec))));
+  const res = UrlFetchApp.fetch(endpoint, {
+    method:'post', payload,
+    muteHttpExceptions:true, followRedirects:true, validateHttpsCertificates:true
+  });
+  const code = res.getResponseCode(), text = res.getContentText();
+  if (code >= 400) {
+    const msg = text.replace(/\s+/g,' ').slice(0,400);
+    throw new Error(`TAP error ${code}: ${msg}`);
+  }
+  return text;
+}
+
+function parseCsv_(csv){
+  const lines = csv.split(/\r?\n/).filter(l => l.length);
+  if (!lines.length) return [];
+  const headers = splitCsvLine_(lines[0]);
+  const out=[];
+  for (let i=1;i<lines.length;i++){
+    const cells = splitCsvLine_(lines[i]); const obj={};
+    for (let c=0;c<headers.length;c++) obj[headers[c]] = cells[c];
+    out.push(obj);
+  }
+  return out;
+}
+function splitCsvLine_(line){
+  const out=[]; let cur=''; let inQ=false;
+  for (let i=0;i<line.length;i++){
+    const ch=line[i];
+    if (ch === '"'){ inQ = !inQ; cur += ch; }
+    else if (ch === ',' && !inQ){ out.push(cur.replace(/^"|"$/g,'').replace(/""/g,'"')); cur=''; }
+    else cur += ch;
+  }
+  out.push(cur.replace(/^"|"$/g,'').replace(/""/g,'"'));
+  return out;
+}
+
+function numOrNull_(v){ const n=Number(String(v||'').trim()); return isFinite(n)?n:''; }
+function cleanId_(s){ return String(s||'').replace(/\s+/g,' ').replace(/^NAME\s+/,'').trim(); }
+function pickRaDeg_(r){ return numOrNull_(r.RAJ2000 || r['RAJ2000'] || r.ra || r.RA || r.RAJ2000deg); }
+function pickDecDeg_(r){ return numOrNull_(r.DEJ2000 || r['DEJ2000'] || r.dec || r.DEC || r.DEJ2000deg); }
